@@ -52,7 +52,7 @@ class DispatchState(object):
 
 
 
-class PyOptSparse(Dispatcher):
+class PyOptSparseDispatch(Dispatcher):
     '''
     Dispatch using pyOptSparse optimization package and a pool-based method.
     '''
@@ -329,7 +329,7 @@ class PyOptSparse(Dispatcher):
                 else:
                     storage_levels[comp.name] = self.storage_levels[comp.name][start_i-1]
 
-        def optimize_me(stuff: dict):
+        def optimize_me(stuff: dict) -> [dict, bool]:
             '''Objective function passed to pyOptSparse
             It returns a dict describing the values of the objective and constraint
             functions along with a bool indicating whether an error occured.
@@ -406,6 +406,10 @@ class PyOptSparse(Dispatcher):
                 'tol': 1e-5, # This needs to be fairly loose to allow problems to solve
                 'expect_infeasible_problem': 'yes'
             }
+            # scipy_options = {
+            #   'maxiter': 500,
+            #   'ftol': 1e-5    
+            # }
             opt = pyoptsparse.pyIPOPT.pyIPOPT.IPOPT(options=ipopt_options)
             sol = opt(optProb, sens='CDR')
             # FIXME: Find a way of returning the constraint errors

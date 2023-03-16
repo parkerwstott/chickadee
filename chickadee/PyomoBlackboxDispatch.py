@@ -5,6 +5,7 @@ from .Solution import Solution
 
 # Don't import pyoptsparse here as Gekko users may not want to install it
 import pyoptsparse
+from pyomo.environ import *
 import numpy as np
 import sys
 import os
@@ -50,11 +51,9 @@ class DispatchState(object):
     def __repr__(self):
         return pformat(self.state)
 
-
-
-class PyOptSparse(Dispatcher):
+class PyomoBlackbox(Dispatcher):
     '''
-    Dispatch using pyOptSparse optimization package and a pool-based method.
+    Dispatch using Pyomo optimization package and a pool-based method.
     '''
 
     slack_storage_added = False # In case slack storage is added in a loop
@@ -293,6 +292,7 @@ class PyOptSparse(Dispatcher):
                         end_i: int, init_store, prev_win_end: dict=None) -> Solution:
         '''Dispatch a time-window using a resource-pool method
         :param time_window: The time window to dispatch the system over
+        if !u
         :param start_i: The time-array index for the start of the window
         :param end_i: The time-array index for the end of the window
         :param init_store: dict of the initial storage values of the storage components
@@ -360,7 +360,8 @@ class PyOptSparse(Dispatcher):
         self.objective = optimize_me
 
         # Step 3) Formulate the problem for pyOptSparse
-        optProb = pyoptsparse.Optimization('Dispatch', optimize_me)
+        #optProb = pyoptsparse.Optimization('Dispatch', optimize_me)
+        model = ConcreteModel()
         for comp in self.components:
             if comp.dispatch_type != 'fixed':
                 bounds = [bnd[start_i:end_i] for bnd in self.vs[comp.name]]
@@ -370,11 +371,28 @@ class PyOptSparse(Dispatcher):
                 ramp_up = comp.ramp_rate_up[start_i:end_i]
                 ramp_down = comp.ramp_rate_down[start_i:end_i]
                 if start_i == 0: # The first window will have n-1 ramp points
-                    optProb.addConGroup(f'ramp_{comp.name}', len(time_window)-1,
-                                    lower=-1*ramp_down[:-1], upper=ramp_up[:-1])
+                    # optProb.addConGroup(f'ramp_{comp.name}', len(time_window)-1,
+                    #                 lower=-1*ramp_down[:-1], upper=ramp_up[:-1])
+                    # Pyomo
+                    N = np.arange(0, len(time_window)-1, dtype = int)
+                    # model.N = Set(initialize = N)
+                    model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
+                    model.Times = time_window
+                    setattr(model,f'ramp_{comp.name}',Var(model.T))
+                    def RampRule(model):
+                        return -1*ramp_down[:-1], getattr(model,f'ramp_{comp.name}'), ramp_up[:-1]
+                    constr = Constraint(rule = RampRule)
+                    setattr(model, f'ramp_{comp.name}_con', constr)
+                    # How do I add the N constraints simply and for each comp.name
                 else:
-                    optProb.addConGroup(f'ramp_{comp.name}', len(time_window),
-                                        lower=-1*ramp_down, upper=ramp_up)
+                    #optProb.addConGroup(f'ramp_{comp.name}', len(time_window),
+                     #                   lower=-1*ramp_down, upper=ramp_up)
+                    # Pyomo
+                    model.N = RangeSet(len(time_window))
+                    setattr(model, f'ramp_{comp.name}', Var())
+                    def RampRule(model):
+                        return (-1*ramp_down, getattr(model, f'ramp_{comp.name}'), ramp_up)
+                    setattr(model, f'ramp_{comp.name}_con', Constraint(model.N, rule=RampRule))
 
                 if comp.stores:
                     min_capacity = comp.min_capacity[start_i:end_i]
@@ -383,20 +401,41 @@ class PyOptSparse(Dispatcher):
                     ramp_down = -1*comp.ramp_rate_down[start_i:end_i]
                     # print(f'{comp.name}', comp.stores, min_capacity, max_capacity)
                     # print(ramp_down, ramp_up)
-                    optProb.addConGroup(f'{comp.name}_storage_level', len(time_window),
-                        lower=min_capacity, upper=max_capacity)
+                    #optProb.addConGroup(f'{comp.name}_storage_level', len(time_window),
+                     #   lower=min_capacity, upper=max_capacity)
+                    # Pyomo
+                    model.N = RangeSet(len(time_window))
+                    MyVar = Var(model.N)
+                    setattr(model, f'{comp.name}_storage_level',MyVar)
+                    def StorageRule(model):
+                        return(min_capacity, getattr(model, f'{comp.name}_storage_level'),max_capacity)
+                    setattr(model, f'{comp.name}_storage_con', Constraint(model.N, rule = StorageRule))
                     # Storage components can have negative activities
-                    optProb.addVarGroup(comp.name, len(time_window), 'c',
-                                        value=np.zeros(len(ramp_down)),
-                                        lower=ramp_down,
-                                        upper=ramp_up)
+                    #optProb.addVarGroup(comp.name, len(time_window), 'c',
+                     #                   value=np.zeros(len(ramp_down)),
+                      #                  lower=ramp_down,
+                       #                 upper=ramp_up)
+                    # Pyomo
+                    model.N = RangeSet(len(time_window))
+                    MyVar = Var(model.N, initialize = np.zeros(len(ramp_down)), bounds = (ramp_down,ramp_up))
+                    setattr(model, comp.name, MyVar)
 
                 else:
-                    optProb.addVarGroup(comp.name, len(time_window), 'c',
-                                        value=guess, lower=bounds[0], upper=bounds[1])
-        optProb.addConGroup('resource_balance', len(
-            pool_cons), lower=0, upper=0)
-        optProb.addObj('objective')
+                    #optProb.addVarGroup(comp.name, len(time_window), 'c',
+                     #                   value=guess, lower=bounds[0], upper=bounds[1])
+                    # Pyomo 
+                    model.N = Set(len(time_window))
+                    MyVar = Var(model.N, initialize = guess, bounds = (bounds[0],bounds[1]))
+                    setattr(model, comp.name, MyVar)
+        #optProb.addConGroup('resource_balance', len(
+         #   pool_cons), lower=0, upper=0)
+        #Pyomo
+        model.N = RangeSet(len(pool_cons))
+        constr = Constraint(model.N, bounds = (0,0))
+        setattr(model, 'resource_balance', constr)
+        #optProb.addObj('objective')
+        # Pyomo
+        model.MyObj = Objective(optimize_me)# Not sure if I need to do more to pass the objective function in
 
         # Step 4) Run the optimization
         try:
@@ -406,8 +445,12 @@ class PyOptSparse(Dispatcher):
                 'tol': 1e-5, # This needs to be fairly loose to allow problems to solve
                 'expect_infeasible_problem': 'yes'
             }
-            opt = pyoptsparse.pyIPOPT.pyIPOPT.IPOPT(options=ipopt_options)
-            sol = opt(optProb, sens='CDR')
+            #opt = pyoptsparse.pyIPOPT.pyIPOPT.IPOPT(options=ipopt_options)
+            #sol = opt(optProb, sens='CDR')
+            optimizer = SolverFactory("ipopt")
+            optimizer.solve(model)
+            model.display()
+            # How do I extract all of the needed information from the solved pyomo model
             # FIXME: Find a way of returning the constraint errors
             #print(sol)
             if sol.optInform['value'] < 0:
