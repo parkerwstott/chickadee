@@ -1,10 +1,11 @@
 from .Dispatcher import Dispatcher
-from .Component import PyOptSparseComponent
+#from .Component import PyOptSparseComponent
+from .Component import PyomoBlackboxComponent
 from .TimeSeries import TimeSeries
 from .Solution import Solution
 
 # Don't import pyoptsparse here as Gekko users may not want to install it
-import pyoptsparse
+# import pyoptsparse
 from pyomo.environ import *
 import numpy as np
 import sys
@@ -17,7 +18,7 @@ from pprint import pformat
 
 class DispatchState(object):
     '''Modeled after idaholab/HERON NumpyState object'''
-    def __init__(self, components: List[PyOptSparseComponent], time: List[float]):
+    def __init__(self, components: List[PyomoBlackboxComponent], time: List[float]):
         s = {}
 
         for c in components:
@@ -28,13 +29,13 @@ class DispatchState(object):
         self.state = s
         self.time = time
 
-    def set_activity(self, component: PyOptSparseComponent, resource, activity, i=None):
+    def set_activity(self, component: PyomoBlackboxComponent, resource, activity, i=None):
         if i is None:
             self.state[component.name][resource] = activity
         else:
             self.state[component.name][resource][i] = activity
 
-    def get_activity(self, component: PyOptSparseComponent, resource, i=None):
+    def get_activity(self, component: PyomoBlackboxComponent, resource, i=None):
         try:
             if i is None:
                 return self.state[component.name][resource]
@@ -44,7 +45,7 @@ class DispatchState(object):
             print(i)
             raise err
 
-    def set_activity_vector(self, component: PyOptSparseComponent,
+    def set_activity_vector(self, component: PyomoBlackboxComponent,
                             resource, start, end, activity):
         self.state[component.name][resource][start:end] = activity
 
@@ -376,13 +377,14 @@ class PyomoBlackbox(Dispatcher):
                     # Pyomo
                     N = np.arange(0, len(time_window)-1, dtype = int)
                     # model.N = Set(initialize = N)
-                    model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
+                    model.T = Set(initialize=np.arange(0, len(time_window)-1, dtype=int))
                     model.Times = time_window
                     setattr(model,f'ramp_{comp.name}',Var(model.T))
-                    def RampRule(model):
-                        return -1*ramp_down[:-1], getattr(model,f'ramp_{comp.name}'), ramp_up[:-1]
-                    constr = Constraint(rule = RampRule)
-                    setattr(model, f'ramp_{comp.name}_con', constr)
+                    for t in range(len(time_window) - 1):
+                        def RampRule(model):
+                            return -ramp_down[t], getattr(model,f'ramp_{comp.name}')[t], ramp_up[t]
+                        constr = Constraint(rule = RampRule)
+                        setattr(model, f'ramp_{comp.name}_con_{t}', constr)
                     # How do I add the N constraints simply and for each comp.name
                 else:
                     #optProb.addConGroup(f'ramp_{comp.name}', len(time_window),
@@ -424,15 +426,24 @@ class PyomoBlackbox(Dispatcher):
                     #optProb.addVarGroup(comp.name, len(time_window), 'c',
                      #                   value=guess, lower=bounds[0], upper=bounds[1])
                     # Pyomo 
-                    model.N = Set(len(time_window))
-                    MyVar = Var(model.N, initialize = guess, bounds = (bounds[0],bounds[1]))
+                    N = np.arange(0,len(time_window), dtype = int)
+                    model.N = Set(initialize = N)
+                    #MyVar = Var(model.N, initialize = guess, bounds = (bounds[0],bounds[1]))
+                    # We want the initial value to be guess, but this gives an error
+                    #Is it fine if we don't have an initial guess
+                    MyVar = Var(model.N, bounds = (bounds[0],bounds[1]))
                     setattr(model, comp.name, MyVar)
         #optProb.addConGroup('resource_balance', len(
          #   pool_cons), lower=0, upper=0)
         #Pyomo
-        model.N = RangeSet(len(pool_cons))
-        constr = Constraint(model.N, bounds = (0,0))
-        setattr(model, 'resource_balance', constr)
+        N = np.arange(0, len(pool_cons), dtype = int)
+        model.N = Set(initialize = N)
+        setattr(model, 'resource_balance', Var(model.N))
+        for i in range(len(pool_cons)):
+            def ResourceRule(model):
+                return (0, getattr(model, 'resource_balance')[i], 0)
+            constr = Constraint(rule = ResourceRule)
+            setattr(model, f'resource_balance_{i}', constr)
         #optProb.addObj('objective')
         # Pyomo
         model.MyObj = Objective(optimize_me)# Not sure if I need to do more to pass the objective function in
@@ -491,7 +502,7 @@ class PyomoBlackbox(Dispatcher):
             self.components.append(c)
             self.slack_storage_added = True
 
-    def dispatch(self, components: List[PyOptSparseComponent],
+    def dispatch(self, components: List[PyomoBlackboxComponent],
                     time: List[float], timeSeries: List[TimeSeries] = [],
                     external_obj_func: callable=None, meta=None,
                     verbose: bool=False, scale_objective: bool=True,

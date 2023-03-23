@@ -1,6 +1,6 @@
 '''
 Test that rolling-window dispatch is working properly in Chickadee
-using the pyOpySparse dispatcher
+using the Pyomo dispatcher
 '''
 import chickadee
 import numpy as np
