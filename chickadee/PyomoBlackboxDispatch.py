@@ -360,15 +360,18 @@ class PyomoBlackbox(Dispatcher):
                 return {}, True
         self.objective = optimize_me
 
-        # Step 3) Formulate the problem for pyOptSparse
+        # Step 3) Formulate the problem for pyomo
         #optProb = pyoptsparse.Optimization('Dispatch', optimize_me)
         model = ConcreteModel()
         for comp in self.components:
             if comp.dispatch_type != 'fixed':
                 bounds = [bnd[start_i:end_i] for bnd in self.vs[comp.name]]
                 # FIXME: will need to find a way of generating the guess values
-                guess = comp.guess[start_i:end_i]
-                # print(comp.name, guess)
+                guess = {}
+                for i in range(len(time_window)):
+                    guess[i]= comp.guess[start_i+i]
+                #guess2 = comp.guess[start_i:end_i]
+                #print(comp.name, guess)
                 ramp_up = comp.ramp_rate_up[start_i:end_i]
                 ramp_down = comp.ramp_rate_down[start_i:end_i]
                 if start_i == 0: # The first window will have n-1 ramp points
@@ -386,17 +389,18 @@ class PyomoBlackbox(Dispatcher):
                         constr = Constraint(rule = RampRule)
                         setattr(model, f'ramp_{comp.name}_con_{t}', constr)
                     # How do I add the N constraints simply and for each comp.name
-                else:
+                else: #This if is not tested when debugging out test (yet)
                     #optProb.addConGroup(f'ramp_{comp.name}', len(time_window),
                      #                   lower=-1*ramp_down, upper=ramp_up)
                     # Pyomo
-                    model.N = RangeSet(len(time_window))
-                    setattr(model, f'ramp_{comp.name}', Var())
-                    def RampRule(model):
-                        return (-1*ramp_down, getattr(model, f'ramp_{comp.name}'), ramp_up)
-                    setattr(model, f'ramp_{comp.name}_con', Constraint(model.N, rule=RampRule))
+                    model.T = Set(initialize=np.arange(0, len(time_window), dtype =int))
+                    setattr(model, f'ramp_{comp.name}', Var(model.T))
+                    for t in range(len(time_window)):
+                        def RampRule(model):
+                            return -ramp_down[t], getattr(model, f'ramp_{comp.name}')[t], ramp_up[t]
+                        setattr(model, f'ramp_{comp.name}_con_{t}', Constraint(model.N, rule=RampRule))
 
-                if comp.stores:
+                if comp.stores: #This is not tested when debugging our test (yet)
                     min_capacity = comp.min_capacity[start_i:end_i]
                     max_capacity = comp.capacity[start_i:end_i]
                     ramp_up = comp.ramp_rate_up[start_i:end_i]
@@ -406,33 +410,53 @@ class PyomoBlackbox(Dispatcher):
                     #optProb.addConGroup(f'{comp.name}_storage_level', len(time_window),
                      #   lower=min_capacity, upper=max_capacity)
                     # Pyomo
-                    model.N = RangeSet(len(time_window))
-                    MyVar = Var(model.N)
-                    setattr(model, f'{comp.name}_storage_level',MyVar)
-                    def StorageRule(model):
-                        return(min_capacity, getattr(model, f'{comp.name}_storage_level'),max_capacity)
-                    setattr(model, f'{comp.name}_storage_con', Constraint(model.N, rule = StorageRule))
+                    model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
+                    setattr(model, f'{comp.name}_storage_level', Var(model.T))
+                    for k in range(len(time_window)):
+                        def StorageRule(model):
+                            return(min_capacity[k], getattr(model, f'{comp.name}_storage_level')[k],max_capacity[k])
+                        setattr(model, f'{comp.name}_storage_con_{k}', Constraint(model.N, rule = StorageRule))
                     # Storage components can have negative activities
                     #optProb.addVarGroup(comp.name, len(time_window), 'c',
                      #                   value=np.zeros(len(ramp_down)),
                       #                  lower=ramp_down,
                        #                 upper=ramp_up)
                     # Pyomo
-                    model.N = RangeSet(len(time_window))
-                    MyVar = Var(model.N, initialize = np.zeros(len(ramp_down)), bounds = (ramp_down,ramp_up))
+                    model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
+                    def VarInit(model,j):
+                        return 0
+                    lb = {}
+                    ub = {}
+                    for i in range(len(time_window)):
+                        lb[i] = ramp_down[i]
+                        ub[i] = ramp_up[i]
+                    def VarBounds(model,j):
+                        return (lb[j],ub[j])
+                    MyVar = Var(model.T, initialize = VarInit, bounds = VarBounds)
                     setattr(model, comp.name, MyVar)
 
                 else:
                     #optProb.addVarGroup(comp.name, len(time_window), 'c',
                      #                   value=guess, lower=bounds[0], upper=bounds[1])
                     # Pyomo 
-                    N = np.arange(0,len(time_window), dtype = int)
-                    model.N = Set(initialize = N)
+                    model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
                     #MyVar = Var(model.N, initialize = guess, bounds = (bounds[0],bounds[1]))
                     # We want the initial value to be guess, but this gives an error
                     #Is it fine if we don't have an initial guess
-                    MyVar = Var(model.N, bounds = (bounds[0],bounds[1]))
+                    def VarInit(model,j):
+                        return guess[j]
+                    lb = {}
+                    ub = {}
+                    for i in range(len(time_window)):
+                        lb[i] = bounds[0][i]
+                        ub[i] = bounds[1][i]
+                    def VarBounds(model,j):
+                        return (lb[j], ub[j])
+                    MyVar = Var(model.T, initialize = VarInit, bounds = VarBounds)
+                    #MyVar = Var(model.N, bounds = (bounds[0],bounds[1]))
                     setattr(model, comp.name, MyVar)
+                    #for j in range(len(time_window)):
+                    #    getattr(model, comp.name)[j] = guess[j]
         #optProb.addConGroup('resource_balance', len(
          #   pool_cons), lower=0, upper=0)
         #Pyomo
@@ -458,17 +482,17 @@ class PyomoBlackbox(Dispatcher):
             }
             #opt = pyoptsparse.pyIPOPT.pyIPOPT.IPOPT(options=ipopt_options)
             #sol = opt(optProb, sens='CDR')
-            optimizer = SolverFactory("ipopt")
+            optimizer = SolverFactory('glpk')
             optimizer.solve(model)
             model.display()
             # How do I extract all of the needed information from the solved pyomo model
             # FIXME: Find a way of returning the constraint errors
             #print(sol)
-            if sol.optInform['value'] < 0:
-                print(f"Dispatch optimization failed: {sol.optInform['text']}")
+            #if sol.optInform['value'] < 0:
+            #    print(f"Dispatch optimization failed: {sol.optInform['text']}")
                 #raise Exception(f"Dispatch optimization failed: {sol.optInform['text']}")
-                if sol.optInform['value'] != 2:
-                    sol.fStar *= 10000 # Mark as more "expensive"
+            #    if sol.optInform['value'] != 2:
+            #        sol.fStar *= 10000 # Mark as more "expensive"
         except Exception as err:
             print('Dispatch optimization failed:')
             traceback.print_exc()
