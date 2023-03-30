@@ -135,6 +135,7 @@ class PyomoBlackbox(Dispatcher):
         :returns: dict, storage levels of each storage component over time
         '''
         # Initialize the dispatch
+        print('determine_dispatch called --------------------------------')
         dispatch = DispatchState(self.components, time)
         store_lvls = {}
         # Dispatch the fixed components
@@ -306,6 +307,10 @@ class PyomoBlackbox(Dispatcher):
 
         # Step 2) Set up the objective function and constraint functions
         objective = self.generate_objective()
+        #def objective(dispatch):
+        #    # calculate obj
+        #    return obj
+        #objective()
 
         obj_scale = 1.0
         if self.scale_objective:
@@ -337,6 +342,7 @@ class PyomoBlackbox(Dispatcher):
             :param stuff: dict of optimization vars from pyOptSparse
             :returns: [dict, bool]
             '''
+            print('stuff=', stuff)
             try:
                 dispatch, store_lvl = self.determine_dispatch(stuff, time_window, start_i, end_i, init_store)
                 #print(len(dispatch.time), {key: { res: len(d) for res, d in dispatch.state[key].items()}for key in dispatch.state.keys()})
@@ -388,6 +394,8 @@ class PyomoBlackbox(Dispatcher):
                             return -ramp_down[t], getattr(model,f'ramp_{comp.name}')[t], ramp_up[t]
                         constr = Constraint(rule = RampRule)
                         setattr(model, f'ramp_{comp.name}_con_{t}', constr)
+
+                    
                     # How do I add the N constraints simply and for each comp.name
                 else: #This if is not tested when debugging out test (yet)
                     #optProb.addConGroup(f'ramp_{comp.name}', len(time_window),
@@ -428,21 +436,18 @@ class PyomoBlackbox(Dispatcher):
                     lb = {}
                     ub = {}
                     for i in range(len(time_window)):
+                        
                         lb[i] = ramp_down[i]
                         ub[i] = ramp_up[i]
                     def VarBounds(model,j):
                         return (lb[j],ub[j])
                     MyVar = Var(model.T, initialize = VarInit, bounds = VarBounds)
                     setattr(model, comp.name, MyVar)
-
                 else:
                     #optProb.addVarGroup(comp.name, len(time_window), 'c',
                      #                   value=guess, lower=bounds[0], upper=bounds[1])
                     # Pyomo 
                     model.T = Set(initialize=np.arange(0, len(time_window), dtype=int))
-                    #MyVar = Var(model.N, initialize = guess, bounds = (bounds[0],bounds[1]))
-                    # We want the initial value to be guess, but this gives an error
-                    #Is it fine if we don't have an initial guess
                     def VarInit(model,j):
                         return guess[j]
                     lb = {}
@@ -453,10 +458,7 @@ class PyomoBlackbox(Dispatcher):
                     def VarBounds(model,j):
                         return (lb[j], ub[j])
                     MyVar = Var(model.T, initialize = VarInit, bounds = VarBounds)
-                    #MyVar = Var(model.N, bounds = (bounds[0],bounds[1]))
                     setattr(model, comp.name, MyVar)
-                    #for j in range(len(time_window)):
-                    #    getattr(model, comp.name)[j] = guess[j]
         #optProb.addConGroup('resource_balance', len(
          #   pool_cons), lower=0, upper=0)
         #Pyomo
@@ -464,13 +466,28 @@ class PyomoBlackbox(Dispatcher):
         model.N = Set(initialize = N)
         setattr(model, 'resource_balance', Var(model.N))
         for i in range(len(pool_cons)):
-            def ResourceRule(model):
+            def ResourceRuleOld(model):
                 return (0, getattr(model, 'resource_balance')[i], 0)
-            constr = Constraint(rule = ResourceRule)
+            constr = Constraint(rule = ResourceRuleOld)
             setattr(model, f'resource_balance_{i}', constr)
+        #for cons in pool_cons:
+            #for i in range(len(pool_cons)):
+            #def ResourceRule(model):
+            #    return (0, cons(dispatch), 0)
+        #constrain = Constraint(rule = ResourceRule)
+        #setattr(model, 'resource_balance', constrain)
         #optProb.addObj('objective')
         # Pyomo
-        model.MyObj = Objective(optimize_me)# Not sure if I need to do more to pass the objective function in
+        model.ext_fn = ExternalFunction(objective)
+        inpt = {c.name: getattr(model, c.name) for c in self.components if c.dispatch_type != 'fixed'}
+        model.MyObj = Objective(expr=model.ext_fn(inpt))
+        # From looking at the rbfopt black box optimization examples it looks like the objective is passed in
+        # as a defined expression that takes in the model as the input and returns the expression to be minimized/maximized
+        # For Example
+        # model.MyObj = Objective(rule = objectivefunc, sense = minimize)
+        # where objectivefunc is defined like (But can be more complex and iterate through indexed variables etc)
+        # def objectivefunc(model):
+        #   return model.x**2 +model.y
 
         # Step 4) Run the optimization
         try:
@@ -488,11 +505,11 @@ class PyomoBlackbox(Dispatcher):
             # How do I extract all of the needed information from the solved pyomo model
             # FIXME: Find a way of returning the constraint errors
             #print(sol)
-            #if sol.optInform['value'] < 0:
-            #    print(f"Dispatch optimization failed: {sol.optInform['text']}")
+            if sol.optInform['value'] < 0:
+                print(f"Dispatch optimization failed: {sol.optInform['text']}")
                 #raise Exception(f"Dispatch optimization failed: {sol.optInform['text']}")
-            #    if sol.optInform['value'] != 2:
-            #        sol.fStar *= 10000 # Mark as more "expensive"
+                if sol.optInform['value'] != 2:
+                    sol.fStar *= 10000 # Mark as more "expensive"
         except Exception as err:
             print('Dispatch optimization failed:')
             traceback.print_exc()
@@ -521,7 +538,7 @@ class PyomoBlackbox(Dispatcher):
             trans = self.gen_slack_storage_trans(res)
             cost = self.gen_slack_storage_cost(res)
 
-            c = PyOptSparseComponent(f'{res}_slack', num, num, num, res, trans,
+            c = PyomoBlackboxComponent(f'{res}_slack', num, num, num, res, trans,
                                         cost, stores=[res], guess=guess)
             self.components.append(c)
             self.slack_storage_added = True
