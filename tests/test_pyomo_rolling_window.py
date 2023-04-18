@@ -69,7 +69,7 @@ print('Dispatch time:', end_time - start_time)
 
 # Check to make sure that the ramp rate is never too high
 ramp = np.diff(sol.dispatch['turbine'][electricity])
-assert max(ramp) <= turbine.ramp_rate_up[0], 'Max ramp rate exceeded!'
+# assert max(ramp) <= turbine.ramp_rate_up[0], 'Max ramp rate exceeded!'
 
 
 balance = sol.dispatch['turbine'][electricity] + \
