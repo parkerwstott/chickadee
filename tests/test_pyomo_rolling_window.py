@@ -81,6 +81,7 @@ plt.plot(sol.time, sol.dispatch['el_market'][electricity], label='El cons')
 plt.plot(sol.time, balance, label='Electricity balance')
 plt.plot(sol.time[:-1], ramp, label='Ramp rate')
 plt.legend()
+plt.savefig('output.png')
 plt.show()
 
 print(sol.dispatch['smr'][steam])

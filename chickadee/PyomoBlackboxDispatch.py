@@ -387,45 +387,12 @@ class PyomoBlackbox(Dispatcher):
                     guess[i]= comp.guess[start_i+i]
                 ramp_up = comp.ramp_rate_up[start_i:end_i]
                 ramp_down = comp.ramp_rate_down[start_i:end_i]
-                if start_i == 0: # The first window will have n-1 ramp points
-
-                    # setattr(model,f'ramp_{comp.name}',Var(model.T))
-                    # for t in range(len(time_window) - 1):
-                    #     def RampRule(model):
-                    #         return -ramp_down[t], getattr(model,f'ramp_{comp.name}')[t], ramp_up[t]
-                    #     constr = Constraint(rule = RampRule)
-                    #     setattr(model, f'ramp_{comp.name}_con_{t}', constr)
-                    ...
-
-                    
-                    # How do I add the N constraints simply and for each comp.name
-                else: #This if is not tested when debugging out test (yet)
-                    # setattr(model, f'ramp_{comp.name}', Var(model.T))
-                    # for t in range(len(time_window)):
-                    #     def RampRule(model):
-                    #         return -ramp_down[t], getattr(model, f'ramp_{comp.name}')[t], ramp_up[t]
-                    #     setattr(model, f'ramp_{comp.name}_con_{t}', Constraint(model.N, rule=RampRule))
-                    ...
-
 
                 if comp.stores: #This is not tested when debugging our test (yet)
                     min_capacity = comp.min_capacity[start_i:end_i]
                     max_capacity = comp.capacity[start_i:end_i]
                     ramp_up = comp.ramp_rate_up[start_i:end_i]
                     ramp_down = -1*comp.ramp_rate_down[start_i:end_i]
-                    #optProb.addConGroup(f'{comp.name}_storage_level', len(time_window),
-                     #   lower=min_capacity, upper=max_capacity)
-                    # setattr(model, f'{comp.name}_storage_level', Var(model.T))
-                    # for k in range(len(time_window)):
-                    #     def StorageRule(model):
-                    #         return(min_capacity[k], getattr(model, f'{comp.name}_storage_level')[k],max_capacity[k])
-                    #     setattr(model, f'{comp.name}_storage_con_{k}', Constraint(model.N, rule = StorageRule))
-                    # Storage components can have negative activities
-                    #optProb.addVarGroup(comp.name, len(time_window), 'c',
-                     #                   value=np.zeros(len(ramp_down)),
-                      #                  lower=ramp_down,
-                       #                 upper=ramp_up)
-                    # Pyomo
                     def VarInit(model,j):
                         return 0
                     lb = {}
@@ -436,41 +403,80 @@ class PyomoBlackbox(Dispatcher):
                         ub[i] = ramp_up[i]
                     def VarBounds(model,j):
                         return (lb[j],ub[j])
-                    MyVar = Var(model.T, initialize = guess[0], bounds = (lb[0], ub[0]))
-                    setattr(model, comp.name, MyVar)
+                    comp_var = Var(model.T, initialize = guess[0], bounds = (lb[0], ub[0]))
+                    setattr(model, comp.name, comp_var)
                 else:
-                    lb = {}
-                    ub = {}
-                    for i in range(len(time_window)):
-                        lb[i] = bounds[0][i]
-                        ub[i] = bounds[1][i]
-                    MyVar = Var(range(window_length), initialize = guess[0], bounds = (lb[0], ub[0]))
-                    setattr(model, comp.name, MyVar)
+                    # Generate the lower and upper capacity bounds for non-storage components
+                    bounds_generator = lambda m, j: (bounds[0][j], bounds[1][j])
+                    # Generate the initial values for non-storage components
+                    initvals_generator = lambda m, j: guess[j]
+                    # Generate and set the Pyomo variable for the component output
+                    comp_var = Var(range(window_length), initialize=initvals_generator, bounds=bounds_generator)
+                    setattr(model, comp.name, comp_var)
+
+                    # Generate and set the Pyomo variable for the component ramp rate
+                    # initramp_generator = lambda m, j: 
+                    # ramp_bounds_generator = lambda m, j: (-1*comp.ramp_rate_down[j], comp.ramp_rate_up[j])
+                    # comp_ramp_var = Var(range(window_length), initialize=19, bounds=ramp_bounds_generator)
+                    # setattr(model, f'{comp.name}_ramp', comp_ramp_var)
+
+
+                    # if start_i == 0:
+                    #     for t in range(window_length-1):
+                    #         comp_ramp_down_constr = Constraint(expr=comp_ramp_var[t]==(comp_var[t+1]-comp_var[t]))
+                    #         setattr(model, f'{comp.name}_ramp_{t}', comp_ramp_down_constr)
+
+                        # for t in range(window_length-1):
+                        #     comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
+                        #     setattr(model, f'{comp.name}_ramp_{t}', comp_ramp_down_constr)
+                        
+                    # else:                     
+                    #     comp_ramp_down_constr = Constraint(expr=comp_ramp_var[0]==(comp_var[0]-prev_win_end[comp.name]))
+                    #     setattr(model, f'{comp.name}_ramp_{start_i}', comp_ramp_down_constr)
+                    #     for t in range(window_length-1):
+                    #         comp_ramp_down_constr = Constraint(expr=comp_ramp_var[t+1]==(comp_var[t+1]-comp_var[t]))
+                    #         setattr(model, f'{comp.name}_ramp_{start_i+t+1}', comp_ramp_down_constr)
+
+                        # comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
+                        # setattr(model, f'{comp.name}_ramp_{0}', comp_ramp_down_constr)
+                        # for t in range(window_length-1):
+                        #     comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
+                        #     setattr(model, f'{comp.name}_ramp_{t+1}', comp_ramp_down_constr)
+
+                    if start_i == 0:
+                        for t in range(window_length-1):
+                            comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
+                            setattr(model, f'{comp.name}_ramp_down_{t}', comp_ramp_down_constr)
+
+
+                            comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[t])
+                            setattr(model, f'{comp.name}_ramp_up_{t}', comp_ramp_up_constr)
+
+                    else:
+                        comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
+                        setattr(model, f'{comp.name}_ramp_down_0', comp_ramp_down_constr)
+
+
+                        comp_ramp_up_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) >= -1*comp.ramp_rate_down[start_i])
+                        setattr(model, f'{comp.name}_ramp_up_0', comp_ramp_up_constr)
+                        for t in range(window_length-1):
+                            comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
+                            setattr(model, f'{comp.name}_ramp_down_{t+1}', comp_ramp_down_constr)
+
+
+                            comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[start_i+t])
+                            setattr(model, f'{comp.name}_ramp_up_{t+1}', comp_ramp_up_constr)
+                        # Trouble Shooting
+                        # These constraints are causing issues
+                        # Tried replacing comp_var with getattr(model,comp.name) but didn't help
+                        # Tried to divide by dT but still far off
+
+                    # Is this the storage level constraint?
                     for t in range(window_length):
                         v = getattr(model, comp.name)
                         constr = Constraint(expr=v[t] <= comp.capacity[t])
                         setattr(model, f'{comp.name}_cap_{t}', constr)
 
-        #optProb.addConGroup('resource_balance', len(
-         #   pool_cons), lower=0, upper=0)
-        #Pyomo
-        # N = np.arange(0, len(pool_cons), dtype = int)
-        # model.N = Set(initialize = N)
-        # setattr(model, 'resource_balance', Var(model.N))
-        # for i in range(len(pool_cons)):
-        #     def ResourceRuleOld(model):
-        #         return (0, getattr(model, 'resource_balance')[i], 0)
-        #     constr = Constraint(rule = ResourceRuleOld)
-        #     setattr(model, f'resource_balance_{i}', constr)
-        #for cons in pool_cons:
-            #for i in range(len(pool_cons)):
-            #def ResourceRule(model):
-            #    return (0, cons(dispatch), 0)
-        #constrain = Constraint(rule = ResourceRule)
-        #setattr(model, 'resource_balance', constrain)
-        #optProb.addObj('objective')
-        # Pyomo
-        # def objective_wrapper(m0v0,m0v1,m0v2,m0v3,m0v4,m0v5,m0v6,m0v7,m0v8,m1v0,m1v1,m1v2,m1v3,m1v4,m1v5,m1v6,m1v7,m1v8 ):
         def objective_wrapper(*args):
             '''Wraps the objective function so that it can take a single array as input'''
             stuff_dict = {}
@@ -490,8 +496,29 @@ class PyomoBlackbox(Dispatcher):
                 stuff_copy[i] = v+step
                 grad.append(objective_wrapper((stuff_copy - c)/step))
             return grad
+        
+        def resource_constr_wrapper(*args):
+            '''Wraps the objective function so that it can take a single array as input'''
+            stuff_dict = {}
+            # Unpack the array into a dict
+            for i, c in enumerate(self.components):
+                if c.dispatch_type != 'fixed':
+                    stuff_dict[c.name] = np.array(args[i*window_length:(i+1)*window_length])
 
-        model.ext_fn = ExternalFunction(objective_wrapper, objective_gradient)
+            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store) 
+            return sum([cons(dispatch) for cons in pool_cons])
+        
+        def resource_constr_gradient(stuff, fixed=False, step=1e-6):
+            c = objective_wrapper(stuff)
+            grad = []
+            for i, v in enumerate(stuff):
+                stuff_copy = deepcopy(stuff)
+                stuff_copy[i] = v+step
+                grad.append(objective_wrapper((stuff_copy - c)/step))
+            return grad
+
+        model.ext_resource_constr_fn = ExternalFunction(resource_constr_wrapper,resource_constr_gradient)
+        model.ext_objective_fn = ExternalFunction(objective_wrapper, objective_gradient)
         # pack the various variables into a single array in a predictable manner
         inpt = []
         # This creates a single array of all the problem variables
@@ -499,22 +526,18 @@ class PyomoBlackbox(Dispatcher):
         for c in self.components:
             if c.dispatch_type == 'fixed':
                 continue
-            comp_var = getattr(model, c.name)
-            inpt.extend(comp_var)
-        model.MyObj = Objective(expr=model.ext_fn(*inpt), sense=minimize)
-        # From looking at the rbfopt black box optimization examples it looks like the objective is passed in
-        # as a defined expression that takes in the model as the input and returns the expression to be minimized/maximized
-        # For Example
-        # model.MyObj = Objective(rule = objectivefunc, sense = minimize)
-        # where objectivefunc is defined like (But can be more complex and iterate through indexed variables etc)
-        # def objectivefunc(model):
-        #   return model.x**2 +model.y
+            inpt.extend(getattr(model, c.name))
+            # inpt.extend(getattr(model, f'{c.name}_ramp'))
+        model.ResourceConstr = Constraint(expr=model.ext_resource_constr_fn(*inpt)<=100)
+        model.MyObj = Objective(expr=model.ext_objective_fn(*inpt), sense=minimize)
 
         # Step 4) Run the optimization
         print('------   About to solve  ------')
         optimizer = SolverFactory('trustregion', verbose=True)
+        #optimizer.options['solver'] = {'expect_infeasible_problem': 'yes'}
         # raise Exception('Stopping here for right now...')
         dofs = []
+        optimizer.config.solver = {'expect_infeasible_problem': 'yes'}
         
         for c in self.components:
             if c.dispatch_type == 'fixed':
@@ -523,7 +546,7 @@ class PyomoBlackbox(Dispatcher):
             for t in range(window_length):
                 dofs.append(getattr(model, c.name)[t])
 
-        results = optimizer.solve(model, dofs, tee=True)
+        results = optimizer.solve(model, dofs, tee=True) #, solver = {'expect_infeasible_problem': 'yes'})
         inpt = []
         for c in self.components:
             if c.dispatch_type == 'fixed':
