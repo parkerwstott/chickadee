@@ -68,7 +68,7 @@ load = chickadee.PyOptSparseComponent('load', load_capacity, load_ramp, load_ram
                                 consumes=steam, dispatch_type='fixed')
 
 # dispatcher = chickadee.PyOptSparse(window_length=20)
-dispatcher = chickadee.PyomoBlackboxDispatch(window_length=20)
+dispatcher = chickadee.PyomoBlackbox(window_length=20)
 
 comps = [smr, tes, load]
 
@@ -80,27 +80,27 @@ print('Dispatch time:', end_time - start_time)
 print('Obj Value: ', sol.objval)
 
 import matplotlib.pyplot as plt
-# plt.subplot(2,1,1)
-# plt.plot(sol.time, sol.dispatch['tes'][steam], label='TES activity')
-# plt.plot(sol.time, sol.storage['tes'], label='TES storage level')
-# plt.plot(sol.time, tes_capacity*np.ones(len(time_horizon)), label='TES Max Capacity')
-# plt.plot(sol.time[:-1], tes_ramp, label='TES ramp')
-# ymax = max(sol.storage['tes'])
-# plt.vlines([w[0] for w in sol.time_windows], 0,
-#            ymax, colors='green', linestyles='--')
-# plt.vlines([w[1] for w in sol.time_windows], 0,
-#            ymax, colors='blue', linestyles='--')
-# plt.legend()
+plt.subplot(2,1,1)
+plt.plot(sol.time, sol.dispatch['tes'][steam], label='TES activity')
+plt.plot(sol.time, sol.storage['tes'], label='TES storage level')
+plt.plot(sol.time, tes_capacity*np.ones(len(time_horizon)), label='TES Max Capacity')
+plt.plot(sol.time, tes_ramp, label='TES ramp')
+ymax = max(sol.storage['tes'])
+plt.vlines([w[0] for w in sol.time_windows], 0,
+           ymax, colors='green', linestyles='--')
+plt.vlines([w[1] for w in sol.time_windows], 0,
+           ymax, colors='blue', linestyles='--')
+plt.legend()
 
-# plt.subplot(2,1,2)
+plt.subplot(2,1,2)
 plt.plot(sol.time, sol.dispatch['smr'][steam], label='Heat generation')
 plt.plot(sol.time, sol.dispatch['load'][steam], label='Heat load')
 plt.plot(sol.time, sol.storage['tes'], label='Heat storage')
 # plt.plot(sol.time[:-1], turbine_ramp, label='turbine ramp')
 ymax = max(sol.dispatch['smr'][steam])
-# plt.vlines([w[0] for w in sol.time_windows], 0,
-#            ymax, colors='green', linestyles='--')
-# plt.vlines([w[1] for w in sol.time_windows], 0,
-#            ymax, colors='blue', linestyles='--')
+plt.vlines([w[0] for w in sol.time_windows], 0,
+           ymax, colors='green', linestyles='--')
+plt.vlines([w[1] for w in sol.time_windows], 0,
+           ymax, colors='blue', linestyles='--')
 plt.legend()
 plt.show()

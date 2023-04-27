@@ -306,28 +306,14 @@ class PyomoBlackbox(Dispatcher):
         :param prev_win_end: dict of the ending values for the previous time window used for consistency constraints
         :returns: DispatchState, the optimal dispatch over the time_window
         '''
+        print(f'solving window: {start_i}-{end_i}')
+        window_length = len(time_window)
 
         # Step 1) Build the resource pool constraint functions
         pool_cons = self._build_pool_cons()
 
         # Step 2) Set up the objective function and constraint functions
         objective = self.generate_objective()
-        #def objective(dispatch):
-        #    # calculate obj
-        #    return obj
-        #objective()
-
-        obj_scale = 1.0
-        if self.scale_objective:
-            # Make an initial call to the objective function and scale it
-            init_dispatch = {}
-            for comp in self.components:
-                if comp.dispatch_type != 'fixed':
-                    init_dispatch[comp.name] = comp.guess[start_i:end_i]
-
-            # get the initial dispatch so it can be used for scaling
-            initdp, _ = self.determine_dispatch(init_dispatch, time_window, start_i, end_i, init_store)
-            obj_scale = objective(initdp)
 
         # Figure out the initial storage levels
         # if this is the first time window, use the 'storage_init_level' property.
@@ -340,44 +326,53 @@ class PyomoBlackbox(Dispatcher):
                 else:
                     storage_levels[comp.name] = self.storage_levels[comp.name][start_i-1]
 
-        def optimize_me(stuff: dict):
-            '''Objective function passed to pyOptSparse
-            It returns a dict describing the values of the objective and constraint
-            functions along with a bool indicating whether an error occured.
-            :param stuff: dict of optimization vars from pyOptSparse
-            :returns: [dict, bool]
-            '''
-            print('stuff=', stuff)
-            try:
-                dispatch, store_lvl = self.determine_dispatch(stuff, time_window, start_i, end_i, init_store)
-                #print(len(dispatch.time), {key: { res: len(d) for res, d in dispatch.state[key].items()}for key in dispatch.state.keys()})
-                # At this point the dispatch should be fully determined, so assemble the return object
-                things = {}
-                # Dispatch the components to generate the obj val
-                things['objective'] = objective(dispatch)/obj_scale #FIXME: I'm broken
-                # Run the resource pool constraints
-                things['resource_balance'] = [cons(dispatch) for cons in pool_cons]
-                for comp in self.components:
-                    if comp.dispatch_type != 'fixed':
-                        if start_i == 0:
-                            things[f'ramp_{comp.name}'] = np.diff(stuff[comp.name])
-                        else: # Make sure subsequent windows start from the last point of the previous window
-                            things[f'ramp_{comp.name}'] = np.diff(
-                                np.insert(stuff[comp.name], 0, prev_win_end[comp.name]))
-                    if comp.stores:
-                        things[f'{comp.name}_storage_level'] = store_lvl[comp.name]
-                return things, False
-            except Exception: # If the input crashes the objective function
-                return {}, True
-        self.objective = optimize_me
+        # Determine all the resources in the system
+        resources = []
+        for c in self.components:
+            for r in c.get_resources():
+                if r not in resources:
+                    resources.append(r)
+
+        # Make a map of the available storage elements for each resource
+        storage_dict = {res: [] for res in resources}
+        for c in self.components:
+            if c.stores:
+                storage_dict[c.stores].append(c)
+
+        # Get the full dispatch based on the initial guess
+        guess_dispatch = {}
+        for i, c in enumerate(self.components):
+            if c.dispatch_type != 'fixed':
+                guess_dispatch[c.name] = c.guess
+        guess_dispatch, store_lvl = self.determine_dispatch(
+                                        guess_dispatch, time_window, start_i, end_i, init_store)
+
+        # Determine what resource balances errors this dispatch would result in
+        resource_errors = {}
+        for res in resources:
+            err = np.zeros(window_length)
+            for c in self.components:
+                if res in c.get_resources():
+                    if c.dispatch_type != 'fixed':
+                        err += guess_dispatch.state[c.name][res][start_i:end_i]
+                    else:
+                        err += c.guess[start_i: end_i]
+            resource_errors[res] = err
+
+        # Split the resource balance errors between the storage components for each resource
+        # The goal is not to find the optimum, but to be as likely as possible to start with 
+        # a guess in the feasible region.
+        for res in storage_dict:
+            for s in storage_dict[res]:
+                for t in range(window_length):
+                    dguess = max(min(resource_errors[res][t], s.ramp_rate_up[t]), -s.ramp_rate_down[t])
+                    s.guess[t] = dguess
+                    resource_errors[res][t] -= dguess
 
         # Step 3) Formulate the problem for pyomo
-        #optProb = pyoptsparse.Optimization('Dispatch', optimize_me)
         model = ConcreteModel()
 
-        window_length = len(time_window)
-
-        model.T = Set(initialize=np.arange(0, window_length, dtype =int))
+        model.T = Set(initialize=np.arange(0, window_length, dtype=int))
 
         for comp in self.components:
             if comp.dispatch_type != 'fixed':
@@ -393,18 +388,14 @@ class PyomoBlackbox(Dispatcher):
                     max_capacity = comp.capacity[start_i:end_i]
                     ramp_up = comp.ramp_rate_up[start_i:end_i]
                     ramp_down = -1*comp.ramp_rate_down[start_i:end_i]
-                    def VarInit(model,j):
-                        return 0
-                    lb = {}
-                    ub = {}
-                    for i in range(len(time_window)):
-                        
-                        lb[i] = ramp_down[i]
-                        ub[i] = ramp_up[i]
-                    def VarBounds(model,j):
-                        return (lb[j],ub[j])
-                    comp_var = Var(model.T, initialize = guess[0], bounds = (lb[0], ub[0]))
+                    # Storage Variable
+                    # Generate the lower and upper storage rates for storage components
+                    bounds_generator = lambda m, j: (ramp_down[j], ramp_up[j])
+                    initvals_generator = lambda m, j: guess[j]
+                    # Generate and set the Pyomo variable for the component output
+                    comp_var = Var(range(window_length), initialize=initvals_generator, bounds=bounds_generator)
                     setattr(model, comp.name, comp_var)
+
                 else:
                     # Generate the lower and upper capacity bounds for non-storage components
                     bounds_generator = lambda m, j: (bounds[0][j], bounds[1][j])
@@ -414,68 +405,67 @@ class PyomoBlackbox(Dispatcher):
                     comp_var = Var(range(window_length), initialize=initvals_generator, bounds=bounds_generator)
                     setattr(model, comp.name, comp_var)
 
-                    # Generate and set the Pyomo variable for the component ramp rate
-                    # initramp_generator = lambda m, j: 
-                    # ramp_bounds_generator = lambda m, j: (-1*comp.ramp_rate_down[j], comp.ramp_rate_up[j])
-                    # comp_ramp_var = Var(range(window_length), initialize=19, bounds=ramp_bounds_generator)
-                    # setattr(model, f'{comp.name}_ramp', comp_ramp_var)
+                # Ramp Constraints for both storage and non-storage components        
+                if start_i == 0:
+                    for t in range(window_length-1):
+                        comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
+                        setattr(model, f'{comp.name}_ramp_down_{t}', comp_ramp_down_constr)
 
 
-                    # if start_i == 0:
-                    #     for t in range(window_length-1):
-                    #         comp_ramp_down_constr = Constraint(expr=comp_ramp_var[t]==(comp_var[t+1]-comp_var[t]))
-                    #         setattr(model, f'{comp.name}_ramp_{t}', comp_ramp_down_constr)
+                        comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[t])
+                        setattr(model, f'{comp.name}_ramp_up_{t}', comp_ramp_up_constr)
 
-                        # for t in range(window_length-1):
-                        #     comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
-                        #     setattr(model, f'{comp.name}_ramp_{t}', comp_ramp_down_constr)
-                        
-                    # else:                     
-                    #     comp_ramp_down_constr = Constraint(expr=comp_ramp_var[0]==(comp_var[0]-prev_win_end[comp.name]))
-                    #     setattr(model, f'{comp.name}_ramp_{start_i}', comp_ramp_down_constr)
-                    #     for t in range(window_length-1):
-                    #         comp_ramp_down_constr = Constraint(expr=comp_ramp_var[t+1]==(comp_var[t+1]-comp_var[t]))
-                    #         setattr(model, f'{comp.name}_ramp_{start_i+t+1}', comp_ramp_down_constr)
-
-                        # comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
-                        # setattr(model, f'{comp.name}_ramp_{0}', comp_ramp_down_constr)
-                        # for t in range(window_length-1):
-                        #     comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
-                        #     setattr(model, f'{comp.name}_ramp_{t+1}', comp_ramp_down_constr)
-
-                    if start_i == 0:
-                        for t in range(window_length-1):
-                            comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
-                            setattr(model, f'{comp.name}_ramp_down_{t}', comp_ramp_down_constr)
+                else:
+                    comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
+                    setattr(model, f'{comp.name}_ramp_down_0', comp_ramp_down_constr)
 
 
-                            comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[t])
-                            setattr(model, f'{comp.name}_ramp_up_{t}', comp_ramp_up_constr)
-
-                    else:
-                        comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
-                        setattr(model, f'{comp.name}_ramp_down_0', comp_ramp_down_constr)
-
-
-                        comp_ramp_up_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) >= -1*comp.ramp_rate_down[start_i])
-                        setattr(model, f'{comp.name}_ramp_up_0', comp_ramp_up_constr)
-                        for t in range(window_length-1):
-                            comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
-                            setattr(model, f'{comp.name}_ramp_down_{t+1}', comp_ramp_down_constr)
+                    comp_ramp_up_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) >= -1*comp.ramp_rate_down[start_i])
+                    setattr(model, f'{comp.name}_ramp_up_0', comp_ramp_up_constr)
+                    for t in range(window_length-1):
+                        comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
+                        setattr(model, f'{comp.name}_ramp_down_{t+1}', comp_ramp_down_constr)
 
 
-                            comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[start_i+t])
-                            setattr(model, f'{comp.name}_ramp_up_{t+1}', comp_ramp_up_constr)
-                        # Trouble Shooting
-                        # These constraints are causing issues
-                        # Tried replacing comp_var with getattr(model,comp.name) but didn't help
-                        # Tried to divide by dT but still far off
+                        comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[start_i+t])
+                        setattr(model, f'{comp.name}_ramp_up_{t+1}', comp_ramp_up_constr)
 
-                    # Is this the storage level constraint?
-                    for t in range(window_length):
-                        v = getattr(model, comp.name)
-                        constr = Constraint(expr=v[t] <= comp.capacity[t])
-                        setattr(model, f'{comp.name}_cap_{t}', constr)
+        # Storage Level Constraint (Not sure how to go about this)
+        def storage_wrapper(*args):
+            '''Wraps the objective function so that it can take a single array as input'''
+            stuff_dict = {}
+            # Unpack the array into a dict
+            for i, c in enumerate(self.components):
+                if c.dispatch_type != 'fixed':
+                    stuff_dict[c.name] = np.array(args[i*window_length:(i+1)*window_length])
+            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store)
+            storage_violation = 0.0
+            for i, c in enumerate(self.components):
+                if c.stores:
+                    upr_violations = np.where(store_lvl[c.name] > c.capacity[0])
+                    lwr_violations = np.where(store_lvl[c.name] < c.min_capacity[0])
+                    storage_violation += np.sum(upr_violations)
+                    storage_violation += np.sum(lwr_violations)
+
+            return storage_violation
+        def storage_gradient(stuff, fixed=False, step=1e-6):
+            c = storage_wrapper(stuff)
+            grad = []
+            for i, v in enumerate(stuff):
+                stuff_copy = deepcopy(stuff)
+                stuff_copy[i] = v+step
+                grad.append(storage_wrapper((stuff_copy - c)/step))
+            return grad
+
+        model.ext_storage_fn = ExternalFunction(storage_wrapper, storage_gradient)
+        inpt=[]
+        for c in self.components:
+            if c.dispatch_type == 'fixed':
+                continue
+            inpt.extend(getattr(model, c.name))
+
+        storage_constr = Constraint(expr=model.ext_storage_fn(*inpt)<=5)
+        setattr(model, f'storage_constr', storage_constr)
 
         def objective_wrapper(*args):
             '''Wraps the objective function so that it can take a single array as input'''
@@ -485,7 +475,7 @@ class PyomoBlackbox(Dispatcher):
                 if c.dispatch_type != 'fixed':
                     stuff_dict[c.name] = np.array(args[i*window_length:(i+1)*window_length])
 
-            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store) 
+            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store)
             return float(objective(dispatch))
 
         def objective_gradient(stuff, fixed=False, step=1e-6):
@@ -496,7 +486,7 @@ class PyomoBlackbox(Dispatcher):
                 stuff_copy[i] = v+step
                 grad.append(objective_wrapper((stuff_copy - c)/step))
             return grad
-        
+
         def resource_constr_wrapper(*args):
             '''Wraps the objective function so that it can take a single array as input'''
             stuff_dict = {}
@@ -505,16 +495,16 @@ class PyomoBlackbox(Dispatcher):
                 if c.dispatch_type != 'fixed':
                     stuff_dict[c.name] = np.array(args[i*window_length:(i+1)*window_length])
 
-            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store) 
+            dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store)
             return sum([cons(dispatch) for cons in pool_cons])
-        
+
         def resource_constr_gradient(stuff, fixed=False, step=1e-6):
-            c = objective_wrapper(stuff)
+            c = resource_constr_wrapper(stuff)
             grad = []
             for i, v in enumerate(stuff):
                 stuff_copy = deepcopy(stuff)
                 stuff_copy[i] = v+step
-                grad.append(objective_wrapper((stuff_copy - c)/step))
+                grad.append(resource_constr_wrapper((stuff_copy - c)/step))
             return grad
 
         model.ext_resource_constr_fn = ExternalFunction(resource_constr_wrapper,resource_constr_gradient)
@@ -528,7 +518,7 @@ class PyomoBlackbox(Dispatcher):
                 continue
             inpt.extend(getattr(model, c.name))
             # inpt.extend(getattr(model, f'{c.name}_ramp'))
-        model.ResourceConstr = Constraint(expr=model.ext_resource_constr_fn(*inpt)<=100)
+        # model.ResourceConstr = Constraint(expr=model.ext_resource_constr_fn(*inpt)<=100)
         model.MyObj = Objective(expr=model.ext_objective_fn(*inpt), sense=minimize)
 
         # Step 4) Run the optimization
@@ -537,7 +527,7 @@ class PyomoBlackbox(Dispatcher):
         #optimizer.options['solver'] = {'expect_infeasible_problem': 'yes'}
         # raise Exception('Stopping here for right now...')
         dofs = []
-        optimizer.config.solver = {'expect_infeasible_problem': 'yes'}
+        # optimizer.config.solver = {'expect_infeasible_problem': 'yes'}
         
         for c in self.components:
             if c.dispatch_type == 'fixed':
@@ -546,7 +536,7 @@ class PyomoBlackbox(Dispatcher):
             for t in range(window_length):
                 dofs.append(getattr(model, c.name)[t])
 
-        results = optimizer.solve(model, dofs, tee=True) #, solver = {'expect_infeasible_problem': 'yes'})
+        results = optimizer.solve(model, dofs, tee=True)
         inpt = []
         for c in self.components:
             if c.dispatch_type == 'fixed':
@@ -558,7 +548,7 @@ class PyomoBlackbox(Dispatcher):
         print('------   Finished solve  ------')
         try:
 
-            model.display()
+            # model.display()
             # How do I extract all of the needed information from the solved pyomo model
             # FIXME: Find a way of returning failed windows
             ...
