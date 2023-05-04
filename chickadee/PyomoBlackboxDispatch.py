@@ -1,7 +1,5 @@
-from .Dispatcher import Dispatcher
 #from .Component import PyOptSparseComponent
 from .Component import PyomoBlackboxComponent
-from .TimeSeries import TimeSeries
 from .Solution import Solution
 
 # Don't import pyoptsparse here as Gekko users may not want to install it
@@ -17,8 +15,10 @@ import time as time_lib
 import traceback
 from typing import List
 from itertools import chain
-from pprint import pformat
 from copy import deepcopy
+
+# This ensures that the modified solver is created and registered
+from .ModifiedTrustRegionMethod import ModifiedTrustRegionSolver
 
 class DispatchState(object):
     '''Modeled after idaholab/HERON NumpyState object'''
@@ -57,7 +57,7 @@ class DispatchState(object):
         return pformat(self.state)
 
 
-class PyomoBlackbox(Dispatcher):
+class PyomoBlackbox(object):
     '''
     Dispatch using Pyomo optimization package and a pool-based method.
     '''
@@ -291,7 +291,6 @@ class PyomoBlackbox(Dispatcher):
                 obj = 0.0
                 for c in self.components:
                     obj += c.cost_function(dispatch.state[c.name])
-                print('Returning: ', obj)
                 return pyomo.core.expr.numvalue.NumericConstant(obj)
             return objective
 
@@ -360,13 +359,13 @@ class PyomoBlackbox(Dispatcher):
             resource_errors[res] = err
 
         # Split the resource balance errors between the storage components for each resource
-        # The goal is not to find the optimum, but to be as likely as possible to start with 
+        # The goal is not to find the optimum, but to be as likely as possible to start with
         # a guess in the feasible region.
         for res in storage_dict:
             for s in storage_dict[res]:
                 for t in range(window_length):
-                    dguess = max(min(resource_errors[res][t], s.ramp_rate_up[t]), -s.ramp_rate_down[t])
-                    s.guess[t] = dguess
+                    dguess = max(min(resource_errors[res][t], s.ramp_rate_up[t+start_i]), -s.ramp_rate_down[t+start_i])
+                    s.guess[t+start_i] = dguess
                     resource_errors[res][t] -= dguess
 
         # Step 3) Formulate the problem for pyomo
@@ -405,32 +404,31 @@ class PyomoBlackbox(Dispatcher):
                     comp_var = Var(range(window_length), initialize=initvals_generator, bounds=bounds_generator)
                     setattr(model, comp.name, comp_var)
 
-                # Ramp Constraints for both storage and non-storage components        
-                if start_i == 0:
-                    for t in range(window_length-1):
-                        comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
-                        setattr(model, f'{comp.name}_ramp_down_{t}', comp_ramp_down_constr)
+                # Ramp Constraints for both storage and non-storage components
+                # if start_i == 0:
+                #     for t in range(window_length-1):
+                #         comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[t])
+                #         setattr(model, f'{comp.name}_ramp_down_{t}', comp_ramp_down_constr)
+
+                #         comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[t])
+                #         setattr(model, f'{comp.name}_ramp_up_{t}', comp_ramp_up_constr)
+
+                # else:
+                #     comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
+                #     setattr(model, f'{comp.name}_ramp_down_0', comp_ramp_down_constr)
 
 
-                        comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[t])
-                        setattr(model, f'{comp.name}_ramp_up_{t}', comp_ramp_up_constr)
+                #     comp_ramp_up_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) >= -1*comp.ramp_rate_down[start_i])
+                #     setattr(model, f'{comp.name}_ramp_up_0', comp_ramp_up_constr)
 
-                else:
-                    comp_ramp_down_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) <= comp.ramp_rate_up[start_i])
-                    setattr(model, f'{comp.name}_ramp_down_0', comp_ramp_down_constr)
-
-
-                    comp_ramp_up_constr = Constraint(expr=(comp_var[0]-prev_win_end[comp.name]) >= -1*comp.ramp_rate_down[start_i])
-                    setattr(model, f'{comp.name}_ramp_up_0', comp_ramp_up_constr)
-                    for t in range(window_length-1):
-                        comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
-                        setattr(model, f'{comp.name}_ramp_down_{t+1}', comp_ramp_down_constr)
+                #     for t in range(window_length-1):
+                #         comp_ramp_down_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) <= comp.ramp_rate_up[start_i+t])
+                #         setattr(model, f'{comp.name}_ramp_down_{t+1}', comp_ramp_down_constr)
 
 
-                        comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[start_i+t])
-                        setattr(model, f'{comp.name}_ramp_up_{t+1}', comp_ramp_up_constr)
+                #         comp_ramp_up_constr = Constraint(expr=(comp_var[t+1]-comp_var[t]) >= -1*comp.ramp_rate_down[start_i+t])
+                #         setattr(model, f'{comp.name}_ramp_up_{t+1}', comp_ramp_up_constr)
 
-        # Storage Level Constraint (Not sure how to go about this)
         def storage_wrapper(*args):
             '''Wraps the objective function so that it can take a single array as input'''
             stuff_dict = {}
@@ -448,7 +446,7 @@ class PyomoBlackbox(Dispatcher):
                     storage_violation += np.sum(lwr_violations)
 
             return storage_violation
-        def storage_gradient(stuff, fixed=False, step=1e-6):
+        def storage_gradient(stuff, fixed=False, step=1e-8):
             c = storage_wrapper(stuff)
             grad = []
             for i, v in enumerate(stuff):
@@ -476,9 +474,12 @@ class PyomoBlackbox(Dispatcher):
                     stuff_dict[c.name] = np.array(args[i*window_length:(i+1)*window_length])
 
             dispatch, store_lvl = self.determine_dispatch(stuff_dict, time_window, start_i, end_i, init_store)
-            return float(objective(dispatch))
+            res_cons_violations = sum([cons(dispatch) for cons in pool_cons])
+            obj_val = objective(dispatch)
+            # return float(obj_val+obj_val*res_cons_violations)
+            return float(-obj_val)
 
-        def objective_gradient(stuff, fixed=False, step=1e-6):
+        def objective_gradient(stuff, fixed=False, step=1e-8):
             c = objective_wrapper(stuff)
             grad = []
             for i, v in enumerate(stuff):
@@ -518,25 +519,29 @@ class PyomoBlackbox(Dispatcher):
                 continue
             inpt.extend(getattr(model, c.name))
             # inpt.extend(getattr(model, f'{c.name}_ramp'))
-        # model.ResourceConstr = Constraint(expr=model.ext_resource_constr_fn(*inpt)<=100)
+        model.ResourceConstr = Constraint(expr=model.ext_resource_constr_fn(*inpt)<=10000)
         model.MyObj = Objective(expr=model.ext_objective_fn(*inpt), sense=minimize)
 
         # Step 4) Run the optimization
         print('------   About to solve  ------')
-        optimizer = SolverFactory('trustregion', verbose=True)
-        #optimizer.options['solver'] = {'expect_infeasible_problem': 'yes'}
-        # raise Exception('Stopping here for right now...')
+        ipopt_options = {
+            'option_file_name': '',
+            'max_iter': 500,
+            'tol': 1e-5, # This needs to be fairly loose to allow problems to solve
+            'expect_infeasible_problem': 'yes'
+        }
+        optimizer = SolverFactory('modifiedtrustregion',
+                                  trust_radius=0.001,
+                                  ipopt_options=ipopt_options)
         dofs = []
-        # optimizer.config.solver = {'expect_infeasible_problem': 'yes'}
-        
         for c in self.components:
             if c.dispatch_type == 'fixed':
                 continue
-            # NOTE: CANNOT splat/spread the sets as it destroys their type
+            # NOTE: CANNOT splat/spread the sets as it destroys their type somehow
             for t in range(window_length):
                 dofs.append(getattr(model, c.name)[t])
 
-        results = optimizer.solve(model, dofs, tee=True)
+        results = optimizer.solve(model, dofs, tee=False) #, tee=True
         inpt = []
         for c in self.components:
             if c.dispatch_type == 'fixed':
@@ -546,16 +551,6 @@ class PyomoBlackbox(Dispatcher):
         window_cost = value(model.MyObj)
 
         print('------   Finished solve  ------')
-        try:
-
-            # model.display()
-            # How do I extract all of the needed information from the solved pyomo model
-            # FIXME: Find a way of returning failed windows
-            ...
-        except Exception as err:
-            print('Dispatch optimization failed:')
-            traceback.print_exc()
-            raise err
 
         opt_dispatch = {}
         for i, c in enumerate(self.components):
@@ -591,8 +586,7 @@ class PyomoBlackbox(Dispatcher):
             self.slack_storage_added = True
 
     def dispatch(self, components: List[PyomoBlackboxComponent],
-                    time: List[float], timeSeries: List[TimeSeries] = [],
-                    external_obj_func: callable=None, meta=None,
+                    time: List[float], external_obj_func: callable=None, meta=None,
                     verbose: bool=False, scale_objective: bool=True,
                     slack_storage: bool=False) -> Solution:
         """Optimally dispatch a given set of components over a time horizon
@@ -626,9 +620,3 @@ class PyomoBlackbox(Dispatcher):
             self.add_slack_storage()
 
         return self._dispatch_pool()
-
-# ToDo:
-# - Try priming the initial values for generic systems better
-# - Calculate exact derivatives using JAX if possible. Pyomo may already do this for us.
-# - Handle infeasible cases clearly. Raise an error if the constraints are not met.
-# - Need to add a method to catch if user transfer functions provide the right responses

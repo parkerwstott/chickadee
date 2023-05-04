@@ -30,7 +30,7 @@ def smr_transfer(data, meta):
 smr_capacity = np.ones(n)*1280*35
 smr_ramp = np.ones(n)*.03*1280*35
 smr_guess = np.ones(n)*.8*1280*35
-smr = chickadee.PyOptSparseComponent('smr', smr_capacity, smr_ramp, smr_ramp, steam,
+smr = chickadee.PyoptSparseComponent('smr', smr_capacity, smr_ramp, smr_ramp, steam,
                                 smr_transfer, smr_cost, produces=steam, guess=smr_guess)
 
 def turbine_transfer(data, meta):
@@ -54,7 +54,7 @@ def turbine_cost(dispatch):
 turbine_capacity = np.ones(n)*1280*35
 turbine_guess = np.ones(n)*.8*1280*35
 turbine_ramp = np.ones(n)*.5*1280*35
-turbine = chickadee.PyOptSparseComponent('turbine', turbine_capacity,
+turbine = chickadee.PyoptSparseComponent('turbine', turbine_capacity,
                                 turbine_ramp, turbine_ramp, electricity,
                                 turbine_transfer, turbine_cost,
                                 produces=electricity, consumes=steam, guess=turbine_guess)
@@ -69,7 +69,7 @@ def elm_cost(dispatch):
 # elm_capacity = np.ones(n)*-800
 elm_capacity = -Load
 elm_ramp = 1e10*np.ones(n)
-elm = chickadee.PyOptSparseComponent('el_market', elm_capacity, elm_ramp, elm_ramp,
+elm = chickadee.PyoptSparseComponent('el_market', elm_capacity, elm_ramp, elm_ramp,
                                 electricity, el_market_transfer, elm_cost,
                                 consumes=electricity, dispatch_type='fixed')
 

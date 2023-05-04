@@ -16,7 +16,7 @@ def comp1_trans(data, meta):
     return data, meta
 def comp1_cost(dispatch):
     return -1*sum(dispatcher[res1])
-comp1 = chickadee.PyOptSparseComponent('comp1', comp1_cap, comp1_ramp, res1,
+comp1 = chickadee.PyoptSparseComponent('comp1', comp1_cap, comp1_ramp, res1,
                                         comp1_trans, comp1_cost, produces=res1)
 # Should auto-generate the right guess value
 assert np.array_equal(comp1.guess, comp1_cap)
@@ -29,7 +29,7 @@ def comp2_trans(data, meta):
     return data, meta
 def comp2_cost(dispatch):
     return 1*sum(dispatcher[res1])
-comp2 = chickadee.PyOptSparseComponent('comp2', comp2_cap, comp2_ramp, res1,
+comp2 = chickadee.PyoptSparseComponent('comp2', comp2_cap, comp2_ramp, res1,
                                        comp2_trans, comp2_cost, produces=res1,
                                        guess=comp2_guess)
 # Should use given guess values

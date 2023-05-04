@@ -1,5 +1,5 @@
 from .Dispatcher import Dispatcher
-from .Component import PyOptSparseComponent
+from .Component import BlackboxComponent
 from .TimeSeries import TimeSeries
 from .Solution import Solution
 
@@ -16,7 +16,7 @@ from pprint import pformat
 
 class DispatchState(object):
     '''Modeled after idaholab/HERON NumpyState object'''
-    def __init__(self, components: List[PyOptSparseComponent], time: List[float]):
+    def __init__(self, components: List[BlackboxComponent], time: List[float]):
         s = {}
 
         for c in components:
@@ -27,13 +27,13 @@ class DispatchState(object):
         self.state = s
         self.time = time
 
-    def set_activity(self, component: PyOptSparseComponent, resource, activity, i=None):
+    def set_activity(self, component: BlackboxComponent, resource, activity, i=None):
         if i is None:
             self.state[component.name][resource] = activity
         else:
             self.state[component.name][resource][i] = activity
 
-    def get_activity(self, component: PyOptSparseComponent, resource, i=None):
+    def get_activity(self, component: BlackboxComponent, resource, i=None):
         try:
             if i is None:
                 return self.state[component.name][resource]
@@ -43,7 +43,7 @@ class DispatchState(object):
             print(i)
             raise err
 
-    def set_activity_vector(self, component: PyOptSparseComponent,
+    def set_activity_vector(self, component: BlackboxComponent,
                             resource, start, end, activity):
         self.state[component.name][resource][start:end] = activity
 
@@ -408,7 +408,7 @@ class PyOptSparseDispatch(Dispatcher):
             }
             # scipy_options = {
             #   'maxiter': 500,
-            #   'ftol': 1e-5    
+            #   'ftol': 1e-5
             # }
             opt = pyoptsparse.pyIPOPT.pyIPOPT.IPOPT(options=ipopt_options)
             sol = opt(optProb, sens='CDR')
@@ -447,12 +447,12 @@ class PyOptSparseDispatch(Dispatcher):
             trans = self.gen_slack_storage_trans(res)
             cost = self.gen_slack_storage_cost(res)
 
-            c = PyOptSparseComponent(f'{res}_slack', num, num, num, res, trans,
+            c = BlackboxComponent(f'{res}_slack', num, num, num, res, trans,
                                         cost, stores=[res], guess=guess)
             self.components.append(c)
             self.slack_storage_added = True
 
-    def dispatch(self, components: List[PyOptSparseComponent],
+    def dispatch(self, components: List[BlackboxComponent],
                     time: List[float], timeSeries: List[TimeSeries] = [],
                     external_obj_func: callable=None, meta=None,
                     verbose: bool=False, scale_objective: bool=True,

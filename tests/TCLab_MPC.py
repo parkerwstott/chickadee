@@ -7,9 +7,9 @@ import pandas as pd
 
 heat = chickadee.Resource('heat')
 # Questions:
-# 1. 
-# 2. 
-# 3. 
+# 1.
+# 2.
+# 3.
 
 # prep data file
 f = open('TClab_MPC_data.csv', 'w')
@@ -48,19 +48,19 @@ def heater_transfer(data):
 heater_capacity = np.zeros(pl) + 100
 heater_ramp = heater_capacity.copy()
 heater_guess = np.zeros(pl)
-heater = chickadee.PyOptSparseComponent('heater', heater_capacity, heater_ramp, heater_ramp,
+heater = chickadee.PyoptSparseComponent('heater', heater_capacity, heater_ramp, heater_ramp,
                                         heat, heater_transfer, heater_cost, produces=heat,
                                         guess=heater_guess)
 
 def tes_cost(dispatch):
-    return sum(dispatch[heat]) 
+    return sum(dispatch[heat])
 
 def tes_transfer(Q, T0):
     td = 3               # time delay
     Ta = 23.0+273.15     # K
     mass = 4.0/1000.0    # kg
     Cp = 0.5*1000.0      # J/kg-K
-    U = 10 
+    U = 10
     A = 10.0/100.0**2    # Area not between heaters in m^2
     As = 2.0/100.0**2    # Area between heaters in m^2
     eps = 0.9            # Emissivity
@@ -77,7 +77,7 @@ tes_capacity = np.zeros(pl) + 373
 tes_ramp = np.zeros(pl) + 100
 tes_guess = np.zeros(pl) + 320
 T0 = 273+25
-tes = chickadee.PyOptSparseComponent('tes', tes_capacity, tes_ramp, tes_ramp, heat,
+tes = chickadee.PyoptSparseComponent('tes', tes_capacity, tes_ramp, tes_ramp, heat,
                                      tes_transfer, tes_cost, stores=heat
                                      , guess=tes_guess, storage_init_level=T0)
 comps = [heater, tes]
@@ -91,7 +91,7 @@ dispatcher = chickadee.PyOptSparse(window_length=pl)
 # MPC Loop
 for i in range(len(time_horizon) - pl):
     ie = pl+i
-    start_time = time.time() 
+    start_time = time.time()
 
     T0 = get_T() # get current temperature
     comps[1].storage_init_level=T0
@@ -100,14 +100,14 @@ for i in range(len(time_horizon) - pl):
     def objective(dispatch):
         tes_store = tes_transfer(dispatch.state['heater'][heat], T0)
         return np.sum((tes_store - T_sp[i:ie])**2)
-    
+
     # run optimization on 1 time window
     sol = dispatcher.dispatch(comps, t[:pl], external_obj_func=objective)
     sols.append(sol)
     # output first solution heater value to hardware
-    Qval = np.round(sol.dispatch['heater'][heat][0],2) 
-    set_Q(Qval)   
-    
+    Qval = np.round(sol.dispatch['heater'][heat][0],2)
+    set_Q(Qval)
+
     # print and output the values
     print(f'Time: {time_horizon[i]}s, Tsp: {T_sp[i]} K, T: {T0} K, Q: {Qval}')
     f.write(f'{time_horizon[i]},{T_sp[i]},{T0},{Qval}\n')
@@ -116,12 +116,12 @@ for i in range(len(time_horizon) - pl):
     end_time = time.time()
     dt = end_time - start_time
     dt_time_horizon = time_horizon[1] - time_horizon[0]
-    time.sleep(dt_time_horizon - dt) 
+    time.sleep(dt_time_horizon - dt)
 
 a.Q1(0)
 a.Q2(0)
 a.close()
-f.close()   
+f.close()
 print('Disconecting TClab')
 
 plt.figure(1)
@@ -140,7 +140,7 @@ plt.legend()
 # plt.vlines([w[0] for w in sol[si].time_windows], 0, ymax, colors='green', linestyles='--')
 # plt.vlines([w[1] for w in sol[si].time_windows], 0, ymax, colors='blue', linestyles='--')
 # plt.legend()
-# 
+#
 # plt.subplot(2,1,2)
 # plt.plot(sol[si].time, sol[si].dispatch['heater'][heat], label='heater')
 # plt.legend()

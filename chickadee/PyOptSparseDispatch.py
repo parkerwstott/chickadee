@@ -1,6 +1,4 @@
-from .Dispatcher import Dispatcher
 from .Component import PyOptSparseComponent
-from .TimeSeries import TimeSeries
 from .Solution import Solution
 
 # Don't import pyoptsparse here as Gekko users may not want to install it
@@ -52,7 +50,7 @@ class DispatchState(object):
 
 
 
-class PyOptSparse(Dispatcher):
+class PyOptSparse(object):
     '''
     Dispatch using pyOptSparse optimization package and a pool-based method.
     '''
@@ -449,8 +447,7 @@ class PyOptSparse(Dispatcher):
             self.slack_storage_added = True
 
     def dispatch(self, components: List[PyOptSparseComponent],
-                    time: List[float], timeSeries: List[TimeSeries] = [],
-                    external_obj_func: callable=None, meta=None,
+                    time: List[float], external_obj_func: callable=None, meta=None,
                     verbose: bool=False, scale_objective: bool=True,
                     slack_storage: bool=False) -> Solution:
         """Optimally dispatch a given set of components over a time horizon
